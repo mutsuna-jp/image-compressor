@@ -14,6 +14,8 @@ export interface OrbConfig {
         MAX_VELOCITY: number;
         BOUNDARY_FORCE: number;
         WANDER_JITTER: number;
+        REPULSION_STRENGTH: number;
+        REPULSION_RADIUS_FACTOR: number;
     };
 }
 
@@ -33,6 +35,8 @@ export const DEFAULT_CONFIG: OrbConfig = {
         MAX_VELOCITY: 0.8,
         BOUNDARY_FORCE: 0.03,
         WANDER_JITTER: 0.01,
+        REPULSION_STRENGTH: 0.5,
+        REPULSION_RADIUS_FACTOR: 0.5,
     },
 };
 
@@ -123,6 +127,60 @@ export class OrbSystem {
         edgeMode: boolean
     ) {
         if (!this.width || !this.height) return;
+
+        // 0. Apply Repulsion (New: Weak repulsion with viscous feel)
+        for (let i = 0; i < this.states.length; i++) {
+            for (let j = i + 1; j < this.states.length; j++) {
+                const s1 = this.states[i];
+                const s2 = this.states[j];
+
+                // Calculate centers
+                const c1x = s1.x + s1.size / 2;
+                const c1y = s1.y + s1.size / 2;
+                const c2x = s2.x + s2.size / 2;
+                const c2y = s2.y + s2.size / 2;
+
+                const dx = c1x - c2x;
+                const dy = c1y - c2y;
+                const distSq = dx * dx + dy * dy;
+                
+                // Avoid division by zero
+                if (distSq === 0) continue;
+
+                const dist = Math.sqrt(distSq);
+                
+                // Combined radius with factor (can overlap slightly if factor < 1, or start early if > 1)
+                const r1 = s1.size / 2;
+                const r2 = s2.size / 2;
+                const minDesc = (r1 + r2) * (this.config.PHYSICS.REPULSION_RADIUS_FACTOR || 1.0);
+
+                if (dist < minDesc) {
+                    // Normalized direction vector from s2 to s1
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+
+                    // Repulsion force strength proportional to overlap
+                    // "Viscosity" feel comes from 'weak' repulsion allowing overlap
+                    const overlap = minDesc - dist;
+                    const strength = this.config.PHYSICS.REPULSION_STRENGTH || 0.5;
+                    const force = overlap * strength;
+
+                    // Apply force inversely proportional to size (Mass ~ Size)
+                    // Larger orbs are "heavier" and move less
+                    const m1 = s1.size;
+                    const m2 = s2.size;
+
+                    s1.vx += (nx * force) / m1;
+                    s1.vy += (ny * force) / m1;
+                    // Update wander direction to match repulsion (prevents getting stuck)
+                    s1.wanderTheta = Math.atan2(ny, nx);
+
+                    s2.vx -= (nx * force) / m2;
+                    s2.vy -= (ny * force) / m2;
+                    s2.wanderTheta = Math.atan2(-ny, -nx);
+                }
+            }
+        }
 
         this.states.forEach((state, i) => {
             // 1. Wander Behaviour (Steering)
