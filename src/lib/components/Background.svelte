@@ -1,133 +1,119 @@
-<script>
+<script lang="ts">
   import { onMount } from "svelte";
+  import { fade } from "svelte/transition";
+  import { OrbSystem, DEFAULT_CONFIG } from "$lib/logic/orbPhysics";
 
-  /**
-   * Configuration for the background animation
-   */
-  const CONFIG = {
-    ORB_COUNT: 6,
-    SIZE: { MIN: 15, MAX: 35, UNIT: "vw" },
-    DURATION: { MIN: 25, MAX: 45, UNIT: "s" },
-    OPACITY: { MIN: 0.6, MAX: 0.9 },
-    POSITION: { MIN: -20, MAX: 100 },
-    MOVEMENT: {
-      TX: { MIN: -50, MAX: 50 },
-      TY: { MIN: -50, MAX: 50 },
-      R: { MIN: -20, MAX: 20 },
-      S: { MIN: 0.9, MAX: 1.1 },
-    },
-    COLORS: {
-      HUE_RANGE: 360,
-      SATURATION: "85%",
-      LIGHTNESS: "60%",
-      HUE_OFFSET: { MIN: 30, MAX: 90 },
-    },
+  export let edgeMode = false;
+  export let orbCount = 6;
+  export let sizeMin = 200;
+  export let sizeMax = 500;
+
+  const orbSystem = new OrbSystem(DEFAULT_CONFIG);
+
+  // Local state for template rendering
+  let orbs = orbSystem.orbs;
+
+  // DOM References
+  let orbElementsContrast: (HTMLElement | null)[] = [];
+  let orbElementsColor: (HTMLElement | null)[] = [];
+
+  let animationFrameId: number;
+  let width: number, height: number;
+
+  // Reactivity for config changes
+  $: {
+    orbSystem.setConfig({
+      ORB_COUNT: orbCount,
+      SIZE: { MIN: sizeMin, MAX: sizeMax },
+    });
+
+    // Re-init if dimensions are available (handled by width/height update too)
+    if (width && height) {
+      orbSystem.resize(width, height);
+      orbSystem.initOrbs();
+      orbs = orbSystem.orbs; // Trigger Svelte update
+    }
+  }
+
+  const updatePhysics = () => {
+    orbSystem.update(orbElementsContrast, orbElementsColor, edgeMode);
+    animationFrameId = requestAnimationFrame(updatePhysics);
   };
-
-  /**
-   * Helper to generate random numbers
-   * @param {number} min
-   * @param {number} max
-   * @returns {number}
-   */
-  const rand = (min, max) => Math.random() * (max - min) + min;
-
-  /**
-   * Helper to generate random vibrant gradient
-   * @returns {string}
-   */
-  const randomGradient = () => {
-    const angle = rand(0, 360);
-    const h1 = rand(0, CONFIG.COLORS.HUE_RANGE);
-    const h2 =
-      (h1 + rand(CONFIG.COLORS.HUE_OFFSET.MIN, CONFIG.COLORS.HUE_OFFSET.MAX)) %
-      360; // Keep colors somewhat related but distinct
-    return `linear-gradient(${angle}deg, hsl(${h1}, ${CONFIG.COLORS.SATURATION}, ${CONFIG.COLORS.LIGHTNESS}), hsl(${h2}, ${CONFIG.COLORS.SATURATION}, ${CONFIG.COLORS.LIGHTNESS}))`;
-  };
-
-  /**
-   * Generates keyframe data for orb movement
-   */
-  const generateKeyframes = () => {
-    // Generate 3 steps of random movement with increasing intensity
-    const intensityMultipliers = [1, 2, 3];
-
-    return intensityMultipliers.map((multiplier) => ({
-      tx: rand(
-        CONFIG.MOVEMENT.TX.MIN * multiplier,
-        CONFIG.MOVEMENT.TX.MAX * multiplier,
-      ),
-      ty: rand(
-        CONFIG.MOVEMENT.TY.MIN * multiplier,
-        CONFIG.MOVEMENT.TY.MAX * multiplier,
-      ),
-      r: rand(
-        CONFIG.MOVEMENT.R.MIN * multiplier,
-        CONFIG.MOVEMENT.R.MAX * multiplier,
-      ),
-      s: rand(CONFIG.MOVEMENT.S.MIN, CONFIG.MOVEMENT.S.MAX), // Scale usually shouldn't scale up wildly
-    }));
-  };
-
-  /**
-   * @typedef {Object} Orb
-   * @property {string} size
-   * @property {string} gradient
-   * @property {string} duration
-   * @property {number} opacity
-   * @property {string} style
-   */
-
-  /** @type {Orb[]} */
-  let orbs = [];
 
   onMount(() => {
-    orbs = Array.from({ length: CONFIG.ORB_COUNT }).map(() => {
-      // Randomize appearance
-      const size = rand(CONFIG.SIZE.MIN, CONFIG.SIZE.MAX) + CONFIG.SIZE.UNIT;
-      const duration =
-        rand(CONFIG.DURATION.MIN, CONFIG.DURATION.MAX) + CONFIG.DURATION.UNIT;
-      const gradient = randomGradient();
-      const opacity = rand(CONFIG.OPACITY.MIN, CONFIG.OPACITY.MAX);
+    width = window.innerWidth;
+    height = window.innerHeight;
 
-      // Randomize initial position
-      const top = rand(CONFIG.POSITION.MIN, CONFIG.POSITION.MAX);
-      const left = rand(CONFIG.POSITION.MIN, CONFIG.POSITION.MAX);
+    // Initial setup
+    orbSystem.resize(width, height);
+    orbSystem.initOrbs();
+    orbs = orbSystem.orbs;
 
-      // Generate movement keyframes
-      const [kf1, kf2, kf3] = generateKeyframes();
+    animationFrameId = requestAnimationFrame(updatePhysics);
 
-      const cssVars = `
-        --tx1: ${kf1.tx}px; --ty1: ${kf1.ty}px; --r1: ${kf1.r}deg; --s1: ${kf1.s};
-        --tx2: ${kf2.tx}px; --ty2: ${kf2.ty}px; --r2: ${kf2.r}deg; --s2: ${kf2.s};
-        --tx3: ${kf3.tx}px; --ty3: ${kf3.ty}px; --r3: ${kf3.r}deg; --s3: ${kf3.s};
-      `.replace(/\s+/g, " ");
+    let resizeTimeout: number;
+    const handleResize = () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        // The reactive block above will handle re-init because width/height changed
+      }, 200) as unknown as number;
+    };
 
-      return {
-        size,
-        gradient,
-        duration,
-        opacity,
-        style: `top: ${top}%; left: ${left}%; ${cssVars}`,
-      };
-    });
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      window.removeEventListener("resize", handleResize);
+    };
   });
 </script>
 
 <div class="background-wrapper" aria-hidden="true">
   <div class="gradient-bg"></div>
 
-  <div class="orbs-container">
-    {#each orbs as orb}
+  <!-- Layer 1: The Text (Black) -->
+  <div class="text-layer" in:fade={{ duration: 600 }}>
+    <div class="header-content">
+      <h1>Image Studio</h1>
+      <p class="subtitle">リサイズ、トリミング、圧縮を自由自在に。</p>
+    </div>
+  </div>
+
+  <!-- Layer 2: Contrast Orbs (Difference Mode) -->
+  <!-- These will invert the black text to white, and the white bg to black -->
+  <div class="orbs-container contrast-layer">
+    {#each orbs as orb, i}
       <div
         class="orb"
+        bind:this={orbElementsContrast[i]}
         style="
-          width: {orb.size};
-          height: {orb.size};
+          width: {orb.size}px;
+          height: {orb.size}px;
+          background: #fff;
+          opacity: 1; /* Strong mask */
+          top: 0;
+          left: 0;
+        "
+      ></div>
+    {/each}
+  </div>
+
+  <!-- Layer 3: Color Orbs (Screen Mode) -->
+  <!-- These will colorize the black result from Layer 2, and keep white text white -->
+  <div class="orbs-container color-layer">
+    {#each orbs as orb, i}
+      <div
+        class="orb"
+        bind:this={orbElementsColor[i]}
+        style="
+          width: {orb.size}px;
+          height: {orb.size}px;
           background: {orb.gradient};
-          animation-duration: {orb.duration};
           opacity: {orb.opacity};
-          {orb.style}
+          top: 0;
+          left: 0;
         "
       ></div>
     {/each}
@@ -143,9 +129,7 @@
 >
   <defs>
     <filter id="fluid-goo">
-      <!-- Blur the input image -->
       <feGaussianBlur in="SourceGraphic" stdDeviation="25" result="blur" />
-      <!-- Apply alpha thresholding to create the liquid edge -->
       <feColorMatrix
         in="blur"
         mode="matrix"
@@ -168,75 +152,92 @@
     height: 100vh;
     z-index: -1;
     overflow: hidden;
-    background-color: #f0f4f8;
+    background-color: oklch(0.97 0.01 240);
   }
 
-  /* Subtle subtle gradient base */
+  /* Subtle gradient base */
   .gradient-bg {
     position: absolute;
     inset: 0;
     background: radial-gradient(
       circle at 50% 50%,
-      rgba(255, 255, 255, 0.8),
+      oklch(1 0 0 / 0.8),
       transparent
     );
     z-index: 0;
   }
 
+  /* Text Layer Styles */
+  .text-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    justify-content: center;
+    /* Move text up slightly to match original design's likely position */
+    padding-top: 10vh;
+    pointer-events: none;
+  }
+
+  .header-content {
+    text-align: center;
+  }
+
+  .header-content h1 {
+    font-size: 2.2rem;
+    font-weight: 800;
+    margin: 0 0 0.2rem 0;
+    color: #171717; /* Dark black/grey */
+    letter-spacing: -1px;
+    font-family: inherit;
+  }
+
+  .subtitle {
+    font-size: 1rem;
+    color: #404040; /* Dark grey */
+    font-weight: 500;
+    font-family: inherit;
+  }
+
+  /* Shared Container Styles */
   .orbs-container {
     position: absolute;
     inset: 0;
     filter: url(#fluid-goo);
-    opacity: 0.8; /* Slight transparency for the whole fluid layer */
+    pointer-events: none;
   }
 
   .orb {
     position: absolute;
     border-radius: 50%;
-    /* filter: blur(30px); Removed to keep edges sharp for glassmorphism */
-    filter: blur(0px);
-    opacity: 0.8;
-    mix-blend-mode: normal; /* varied blend modes can be nice */
-    animation-name: float-dynamic;
-    animation-timing-function: cubic-bezier(0.45, 0.05, 0.55, 0.95);
-    animation-iteration-count: infinite;
-    animation-direction: alternate;
     will-change: transform;
   }
 
-  /* 
-   * Dynamic Keyframes 
-   * Uses CSS variables injected via inline styles for each orb
-   */
-  @keyframes float-dynamic {
-    0% {
-      transform: translate(0, 0) rotate(0deg) scale(1);
-    }
-    33% {
-      transform: translate(var(--tx1), var(--ty1)) rotate(var(--r1))
-        scale(var(--s1));
-    }
-    66% {
-      transform: translate(var(--tx2), var(--ty2)) rotate(var(--r2))
-        scale(var(--s2));
-    }
-    100% {
-      transform: translate(var(--tx3), var(--ty3)) rotate(var(--r3))
-        scale(var(--s3));
-    }
+  /* Layer 2 Specifics */
+  .contrast-layer {
+    z-index: 2;
+    mix-blend-mode: difference;
+    opacity: 1;
   }
 
-  /* Optional grid overlay for a "techy" feel, very subtle */
+  /* Layer 3 Specifics */
+  .color-layer {
+    z-index: 3;
+    mix-blend-mode: screen;
+    /* Screen on top of Difference(White, BlackText) -> Screen(Color, White) -> White */
+    /* Screen on top of Difference(White, WhiteBG) -> Screen(Color, Black) -> Color */
+  }
+
   .grid-overlay {
     position: absolute;
     inset: 0;
     background-image: linear-gradient(
-        rgba(0, 122, 255, 0.03) 1px,
+        oklch(0.6 0.2 260 / 0.03) 1px,
         transparent 1px
       ),
-      linear-gradient(90deg, rgba(0, 122, 255, 0.03) 1px, transparent 1px);
+      linear-gradient(90deg, oklch(0.6 0.2 260 / 0.03) 1px, transparent 1px);
     background-size: 50px 50px;
-    z-index: 1;
+    z-index: 4;
     pointer-events: none;
   }
 </style>

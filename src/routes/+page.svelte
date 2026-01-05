@@ -24,6 +24,13 @@
   let isDragging = $state(false);
   let results = $state<Array<{ label: string; url: string; size: number }>>([]);
 
+  // Settings
+  let showSettings = $state(false);
+  let highContrastEdges = $state(false);
+  let bgOrbCount = $state(6);
+  let bgSizeMin = $state(200);
+  let bgSizeMax = $state(500);
+
   // Editor State
   let imageElement = $state<HTMLImageElement | null>(null);
   let showCustomEditor = $state(false);
@@ -37,9 +44,39 @@
     "image/webp",
   );
 
+  let settingsLoaded = $state(false);
+
   onMount(async () => {
     const module = await import("cropperjs");
     CropperClass = module.default;
+
+    // Load Settings from LocalStorage
+    const stored = localStorage.getItem("app_appearance_settings");
+    if (stored) {
+      try {
+        const data = JSON.parse(stored);
+        if (data.highContrastEdges !== undefined)
+          highContrastEdges = data.highContrastEdges;
+        if (data.bgOrbCount !== undefined) bgOrbCount = data.bgOrbCount;
+        if (data.bgSizeMin !== undefined) bgSizeMin = data.bgSizeMin;
+        if (data.bgSizeMax !== undefined) bgSizeMax = data.bgSizeMax;
+      } catch (e) {
+        console.warn("Failed to load settings:", e);
+      }
+    }
+    settingsLoaded = true;
+  });
+
+  $effect(() => {
+    if (settingsLoaded) {
+      const settings = {
+        highContrastEdges,
+        bgOrbCount,
+        bgSizeMin,
+        bgSizeMax,
+      };
+      localStorage.setItem("app_appearance_settings", JSON.stringify(settings));
+    }
   });
 
   function handleFileSelect(event: Event) {
@@ -247,13 +284,101 @@
 
 <div class="page-container">
   <!-- Dynamic Background Component -->
-  <Background />
+  <Background
+    edgeMode={highContrastEdges}
+    orbCount={bgOrbCount}
+    sizeMin={bgSizeMin}
+    sizeMax={bgSizeMax}
+  />
+
+  <!-- Layout Settings -->
+  <button
+    class="settings-btn"
+    onclick={() => (showSettings = true)}
+    aria-label="Settings"
+  >
+    <Settings size={24} color="#1c1c1e" />
+  </button>
+
+  {#if showSettings}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="modal-backdrop"
+      onclick={() => (showSettings = false)}
+      transition:fade={{ duration: 200 }}
+    >
+      <div class="modal-content" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-header">
+          <h2>外観設定</h2>
+          <button class="close-btn" onclick={() => (showSettings = false)}>
+            <X size={20} />
+          </button>
+        </div>
+
+        <label class="toggle-row">
+          <div class="toggle-text">
+            <span class="toggle-title">オーブの縁を強調</span>
+            <span class="toggle-desc">オーブと背景の境界を強調表示します。</span
+            >
+          </div>
+
+          <div class="toggle-switch">
+            <input type="checkbox" bind:checked={highContrastEdges} />
+            <span class="slider"></span>
+          </div>
+        </label>
+
+        <div class="setting-group">
+          <div class="setting-label">
+            <span>オーブの数</span>
+            <span class="value-badge">{bgOrbCount}</span>
+          </div>
+          <input
+            type="range"
+            min="1"
+            max="15"
+            step="1"
+            bind:value={bgOrbCount}
+            class="range-slider"
+          />
+        </div>
+
+        <div class="setting-group">
+          <div class="setting-label">
+            <span>最小サイズ</span>
+            <span class="value-badge">{bgSizeMin}px</span>
+          </div>
+          <input
+            type="range"
+            min="50"
+            max="400"
+            step="10"
+            bind:value={bgSizeMin}
+            class="range-slider"
+          />
+        </div>
+
+        <div class="setting-group">
+          <div class="setting-label">
+            <span>最大サイズ</span>
+            <span class="value-badge">{bgSizeMax}px</span>
+          </div>
+          <input
+            type="range"
+            min="200"
+            max="800"
+            step="10"
+            bind:value={bgSizeMax}
+            class="range-slider"
+          />
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <div class="content-wrapper">
-    <header class="header" in:fade={{ duration: 600 }}>
-      <h1>Image Studio</h1>
-      <p class="subtitle">リサイズ、トリミング、圧縮を自由自在に。</p>
-    </header>
+    <!-- Header moved to Background.svelte -->
 
     {#if !selectedFile}
       <div class="upload-section" in:fade={{ duration: 600, delay: 200 }}>
@@ -506,6 +631,192 @@
     /* background-color: #f0f4f8; Moved to body to prevent white corners if overscrolled */
   }
 
+  .settings-btn {
+    position: fixed;
+    top: 1.5rem;
+    right: 1.5rem;
+    z-index: 50;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.4);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+  }
+  .settings-btn:hover {
+    background: rgba(255, 255, 255, 0.8);
+    transform: rotate(45deg);
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-content {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.1);
+    border-radius: 20px;
+    width: 90%;
+    max-width: 320px;
+    padding: 1.5rem;
+    animation: popIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes popIn {
+    from {
+      opacity: 0;
+      transform: scale(0.9);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+  }
+
+  .modal-header h2 {
+    margin: 0;
+    font-size: 1.2rem;
+    font-weight: 700;
+  }
+
+  .close-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+  }
+  .close-btn:hover {
+    opacity: 1;
+  }
+
+  .toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    cursor: pointer;
+  }
+
+  .toggle-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .toggle-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+  .toggle-desc {
+    font-size: 0.75rem;
+    color: #666;
+  }
+
+  /* Settings Sliders */
+  .setting-group {
+    margin-top: 1.2rem;
+  }
+  .setting-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+  }
+  .value-badge {
+    background: rgba(0, 0, 0, 0.05);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #666;
+  }
+  .range-slider {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: #e4e4e4;
+    border-radius: 2px;
+    outline: none;
+  }
+  .range-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    background: #fff;
+    border-radius: 50%;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  .range-slider::-webkit-slider-thumb:active {
+    transform: scale(1.1);
+  }
+
+  /* Toggle Switch */
+  .toggle-switch {
+    position: relative;
+    width: 50px;
+    height: 28px;
+  }
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background-color: #e4e4e4;
+    transition: 0.3s;
+    border-radius: 34px;
+  }
+  .slider:before {
+    position: absolute;
+    content: "";
+    height: 22px;
+    width: 22px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+  input:checked + .slider {
+    background-color: var(--primary);
+  }
+  input:checked + .slider:before {
+    transform: translateX(22px);
+  }
+
   .content-wrapper {
     width: 100%;
     max-width: 1000px; /* Reduced max-width to keep things tighter */
@@ -514,26 +825,7 @@
     display: flex; /* Added for better vertical distribution if needed */
     flex-direction: column;
     justify-content: center; /* Center content vertically if space allows */
-  }
-
-  .header {
-    text-align: center;
-    margin-bottom: 1.5rem; /* Reduced from 2rem */
-  }
-
-  .header h1 {
-    font-size: 2.2rem; /* Reduced from 3rem */
-    font-weight: 800;
-    margin: 0 0 0.2rem 0;
-    color: #fff;
-    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-    letter-spacing: -1px;
-  }
-
-  .subtitle {
-    font-size: 1rem; /* Reduced from 1.1rem */
-    color: rgba(255, 255, 255, 0.9);
-    font-weight: 500;
+    padding-top: 18vh; /* Added padding to clear fixed header */
   }
 
   /* Upload Section */
