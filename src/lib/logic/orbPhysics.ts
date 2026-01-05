@@ -16,6 +16,7 @@ export interface OrbConfig {
         WANDER_JITTER: number;
         REPULSION_STRENGTH: number;
         REPULSION_RADIUS_FACTOR: number;
+        GRAVITY_STRENGTH: number;
     };
 }
 
@@ -31,12 +32,13 @@ export const DEFAULT_CONFIG: OrbConfig = {
     },
     PHYSICS: {
         FRICTION: 0.98,
-        ACCELERATION: 0.01,
+        ACCELERATION: 0.015, // SLIGHT BOOST
         MAX_VELOCITY: 0.8,
         BOUNDARY_FORCE: 0.03,
-        WANDER_JITTER: 0.01,
+        WANDER_JITTER: 0.08, // DOUBLED FROM 0.01 -> 0.08 (Chaotic)
         REPULSION_STRENGTH: 0.5,
         REPULSION_RADIUS_FACTOR: 0.5,
+        GRAVITY_STRENGTH: 1.5, // Star-like gravity (Increased for visibility)
     },
 };
 
@@ -61,6 +63,7 @@ export class OrbSystem {
     states: OrbState[] = [];
     orbs: OrbVisual[] = [];
     config: OrbConfig;
+    time: number = 0;
 
     constructor(config: OrbConfig = DEFAULT_CONFIG) {
         this.config = config;
@@ -128,13 +131,46 @@ export class OrbSystem {
     ) {
         if (!this.width || !this.height) return;
 
-        // 0. Apply Repulsion (New: Weak repulsion with viscous feel)
+        this.time += 0.002; // Time step for ambient noise
+
+        // Fluid Physics Constants (tuned for "floating/viscous" feel)
+        const TANGENTIAL_FORCE = 0.08; 
+        
+        // Gravity Constants
+        // G_CONST scales the force. We need it to be subtle but effective.
+        // Form: F = G * (m1 * m2) / distSq
+        const GRAVITY_STRENGTH = this.config.PHYSICS.GRAVITY_STRENGTH || 0.05;
+
+        // 0. Ambient Drift (Global Flow)
+        // Instead of a global flow, we use independent noise for each orb to prevent them from moving together.
+        // We create a "spatial" noise effect by using the orb's index as a large offset.
+        for (let i = 0; i < this.states.length; i++) {
+            const s = this.states[i];
+            
+            // Unique phase for each orb (large offset prevents correlation)
+            const t = this.time;
+            const seed = i * 1000; 
+
+            // Pseudo-Perlin approximation: Sum of 2 sine waves with different frequencies
+            // Increased amplitude for more "alive" feel
+            const noiseX = 
+                Math.sin(t * 0.5 + seed) * 0.04 + 
+                Math.sin(t * 1.3 + seed * 2) * 0.02;
+                
+            const noiseY = 
+                Math.cos(t * 0.6 + seed) * 0.04 + 
+                Math.cos(t * 1.4 + seed * 3) * 0.02;
+
+            s.vx += noiseX;
+            s.vy += noiseY;
+        }
+
+        // 1. Fluid Interactions (Repulsion + Vortex)
         for (let i = 0; i < this.states.length; i++) {
             for (let j = i + 1; j < this.states.length; j++) {
                 const s1 = this.states[i];
                 const s2 = this.states[j];
 
-                // Calculate centers
                 const c1x = s1.x + s1.size / 2;
                 const c1y = s1.y + s1.size / 2;
                 const c2x = s2.x + s2.size / 2;
@@ -143,99 +179,242 @@ export class OrbSystem {
                 const dx = c1x - c2x;
                 const dy = c1y - c2y;
                 const distSq = dx * dx + dy * dy;
-                
-                // Avoid division by zero
+
                 if (distSq === 0) continue;
 
                 const dist = Math.sqrt(distSq);
                 
-                // Combined radius with factor (can overlap slightly if factor < 1, or start early if > 1)
+                // Effective radius for interaction
                 const r1 = s1.size / 2;
                 const r2 = s2.size / 2;
-                const minDesc = (r1 + r2) * (this.config.PHYSICS.REPULSION_RADIUS_FACTOR || 1.0);
+                
+                // Masses
+                const m1 = s1.size;
+                const m2 = s2.size;
 
-                if (dist < minDesc) {
-                    // Normalized direction vector from s2 to s1
-                    const nx = dx / dist;
-                    const ny = dy / dist;
+                // CRITICAL FIX: Use full radius for interaction range logic
+                // The config factor (0.5) was allowing deep overlap before ANY physics applied.
+                // We now interact whenever they physically touch (factor 1.0) and even slightly before for fluid effect.
+                // 1.3x radius to act as "Surface Tension" zone (Suction before touch)
+                const interactDist = (r1 + r2) * 1.3; 
 
-                    // Repulsion force strength proportional to overlap
-                    // "Viscosity" feel comes from 'weak' repulsion allowing overlap
-                    const overlap = minDesc - dist;
-                    const strength = this.config.PHYSICS.REPULSION_STRENGTH || 0.5;
-                    const force = overlap * strength;
+                // 1.5. GRAVITY (Universal Attraction)
+                // "Star-like": interacting at infinite distance
+                // Apply gravity BEFORE repulsion overwrite to ensure it's additive, 
+                // OR integrate it into the net force.
+                // Here we apply it always.
+                
+                // Avoid division by zero or extreme forces at close range (softening parameter)
+                // We use a "softened" gravity to prevent singularities: 1 / (d^2 + epsilon^2)
+                const softeningSq = 5000; // ~70px effective smoothing radius
+                const gravityDistSq = distSq + softeningSq;
+                
+                // F = G * m1 * m2 / r^2
+                // We normalize by mass later (a = F/m), so acceleration = G * m_other / r^2
+                // This means massive objects attract others more strongly.
+                
+                // m1 attracts m2 (force points to 1) 
+                // m2 attracts m1 (force points to 2) 
+                // We calculated dx as (c1 - c2), pointing 2 -> 1
+                
+                // Force Magnitude
+                // Scaling: We want reasonable pixels/frame^2. 
+                // Masses are ~300. 300*300 = 90000. 
+                // DistSq can be 2000*2000 = 4,000,000.
+                // 90000 / 4000000 ~ 0.02. 
+                // GRAVITY_STRENGTH should be around 0.1 - 1.0 depending on desired pull.
+                
+                const forceG = (GRAVITY_STRENGTH * m1 * m2) / gravityDistSq;
+                
+                // Decompose gravity vector (Unit vector * Magnitude)
+                // (dx/dist) * forceG
+                // We can optimize: (dx / dist) * forceG  ---> if we use dist in denom of Force?
+                // Let's stick to standard: vector = (dx, dy) normalized * force magnitude
+                
+                const nxG = dx / dist;
+                const nyG = dy / dist;
+                
+                // Apple Gravity to Velocity
+                // v += F / m
+                
+                // Object 1 is pulled towards Object 2 (-dir)
+                // Object 2 is pulled towards Object 1 (+dir) -> Wait. dx is (x1-x2).
+                // If x1 > x2, dx is positive. 1 is to the right.
+                // 1 should move LEFT (-dx). 2 should move RIGHT (+dx).
+                
+                s1.vx -= (nxG * forceG) / m1;
+                s1.vy -= (nyG * forceG) / m1;
+                s2.vx += (nxG * forceG) / m2;
+                s2.vy += (nyG * forceG) / m2;
 
-                    // Apply force inversely proportional to size (Mass ~ Size)
-                    // Larger orbs are "heavier" and move less
-                    const m1 = s1.size;
-                    const m2 = s2.size;
+                if (dist < interactDist) {
+                    const nx = dx / dist; // Normal X
+                    const ny = dy / dist; // Normal Y
+                    
+                    // Tangential Vector (Perpendicular to Normal)
+                    const tx = -ny; 
+                    const ty = nx;
 
+                    // Relative velocity dot Tangential = how much they are sliding past each other
+                    // We want to induce a "spin" or "curl"
+                    
+                    // 1. Repulsion & Surface Tension
+                    // We define a boundary at r1+r2 (physical touch).
+                    // dist < r1+r2: REPULSION (Positive force)
+                    // dist > r1+r2: ATTRACTION / TENSION (Negative force)
+                    
+                    const touchDist = r1 + r2;
+                    const repulsionStrength = this.config.PHYSICS.REPULSION_STRENGTH || 0.5;
+                    
+                    let force = 0;
+                    
+                    if (dist < touchDist) {
+                        // INSIDE (Overlapping) -> Repel
+                        // Normalized overlap (0 to 1, where 1 is center-on-center)
+                        const overlap = touchDist - dist;
+                        const t = overlap / touchDist; 
+                        
+                        // Exponential repulsion
+                        force = repulsionStrength * (Math.exp(t * 4)); 
+                    } else {
+                        // OUTSIDE (Surface Tension Zone) -> Attract
+                        // This is the "Suction" zone.
+                        // Normalized distance in the zone (0 at touch, 1 at max interactDist)
+                        const zoneWidth = interactDist - touchDist;
+                        const distInZone = dist - touchDist;
+                        const t = distInZone / zoneWidth;
+                        
+                        // Sinusoidal suction curve:
+                        // Starts at 0 force at touch (equilibrium? no, we want it sticky at touch usually)
+                        // Actually, let's make it continuous.
+                        // At t=0 (touch), we want strong suction? No, if we want equilibrium at touch, force should be 0.
+                        // But user wants "sticky", so maybe equilibrium is slightly overlapping?
+                        // Let's target equilibrium at exactly touchDist.
+                        // t goes 0 -> 1.
+                        // We want force to go 0 -> -Max -> 0/Merge with Gravity
+                        
+                        // Strong suction peak near the surface
+                        const suctionStrength = 0.8; // Stronger than global gravity
+                        force = -suctionStrength * Math.sin(t * Math.PI); 
+                    }
+
+                    // 2. Tangential Force (Vortex/Slide)
+                    const chirality = (i + j) % 2 === 0 ? 1 : -1;
+                    const slide = chirality * TANGENTIAL_FORCE * (1 - dist / interactDist);
+
+                    // Apply Contact Forces
+                    // Repulsion / Suction
                     s1.vx += (nx * force) / m1;
                     s1.vy += (ny * force) / m1;
-                    // Update wander direction to match repulsion (prevents getting stuck)
-                    s1.wanderTheta = Math.atan2(ny, nx);
-
                     s2.vx -= (nx * force) / m2;
                     s2.vy -= (ny * force) / m2;
-                    s2.wanderTheta = Math.atan2(-ny, -nx);
+
+                    // Tangential (Slide)
+                    s1.vx += (tx * slide) / m1;
+                    s1.vy += (ty * slide) / m1;
+                    s2.vx -= (tx * slide) / m2;
+                    s2.vy -= (ty * slide) / m2;
                 }
             }
         }
 
         this.states.forEach((state, i) => {
-            // 1. Wander Behaviour (Steering)
+            // 2. Wander Behaviour (Steering)
+            // Gently steer the velocity vector, don't just overwrite it.
             state.wanderTheta += (Math.random() - 0.5) * this.config.PHYSICS.WANDER_JITTER;
+            
+            // Align wanderTheta slightly with current velocity to prevent "fighting" movement
+            // This makes the movement smoother and more logical
+            const currentAngle = Math.atan2(state.vy, state.vx);
+            // Shortest angle difference
+            let diff = currentAngle - state.wanderTheta;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            state.wanderTheta += diff * 0.02; // Small factor to slowly align
 
             // Apply force in the current wander direction
-            state.vx += Math.cos(state.wanderTheta) * this.config.PHYSICS.ACCELERATION;
-            state.vy += Math.sin(state.wanderTheta) * this.config.PHYSICS.ACCELERATION;
+            state.vx += Math.cos(state.wanderTheta) * this.config.PHYSICS.ACCELERATION * 0.5;
+            state.vy += Math.sin(state.wanderTheta) * this.config.PHYSICS.ACCELERATION * 0.5;
 
-            // 2. Apply Friction
+            // 3. Apply Friction (Viscosity)
             state.vx *= this.config.PHYSICS.FRICTION;
             state.vy *= this.config.PHYSICS.FRICTION;
 
-            // Limit Velocity
+            // Limit Velocity (Soft limit)
             const v = Math.sqrt(state.vx * state.vx + state.vy * state.vy);
             if (v > this.config.PHYSICS.MAX_VELOCITY) {
                 state.vx = (state.vx / v) * this.config.PHYSICS.MAX_VELOCITY;
                 state.vy = (state.vy / v) * this.config.PHYSICS.MAX_VELOCITY;
             }
 
-            // 3. Update Position
+            // 4. Update Position
             state.x += state.vx;
             state.y += state.vy;
 
-            // 4. Boundary Logic (Soft Bounce)
-            const margin = -100;
+            // 5. Flow Field Boundary (Steering, not bouncing)
+            // Instead of a hard wall or spring force, we simply gently steer the "wander" direction
+            // towards the center when the orb gets too far away.
+            const margin = -100; // Trigger return BEFORE they fully leave the screen
+            
+            // defined boundaries where we start steering back
+            const minX = margin;
+            const maxX = this.width - margin - state.size; 
+            const minY = margin;
+            const maxY = this.height - margin - state.size;
 
-            if (state.x < margin) {
-                state.vx += this.config.PHYSICS.BOUNDARY_FORCE;
-                if (Math.cos(state.wanderTheta) < 0)
-                    state.wanderTheta = Math.PI - state.wanderTheta;
-            }
-            if (state.x > this.width - state.size - margin) {
-                state.vx -= this.config.PHYSICS.BOUNDARY_FORCE;
-                if (Math.cos(state.wanderTheta) > 0)
-                    state.wanderTheta = Math.PI - state.wanderTheta;
-            }
-            if (state.y < margin) {
-                state.vy += this.config.PHYSICS.BOUNDARY_FORCE;
-                if (Math.sin(state.wanderTheta) < 0)
-                    state.wanderTheta = -state.wanderTheta;
-            }
-            if (state.y > this.height - state.size - margin) {
-                state.vy -= this.config.PHYSICS.BOUNDARY_FORCE;
-                if (Math.sin(state.wanderTheta) > 0)
-                    state.wanderTheta = -state.wanderTheta;
+            let distOut = 0; // Usage: how far "deep" into the void are we?
+            let targetAngle = state.wanderTheta;
+            let needsCorrection = false;
+            
+            // Calculate distance outside boundaries for smooth ramping
+            if (state.x < minX) {
+                distOut = Math.max(distOut, minX - state.x);
+                needsCorrection = true;
+            } else if (state.x > maxX) {
+                distOut = Math.max(distOut, state.x - maxX);
+                needsCorrection = true;
             }
 
-            // 5. Apply to DOM (Both layers)
+            if (state.y < minY) {
+                distOut = Math.max(distOut, minY - state.y);
+                needsCorrection = true;
+            } else if (state.y > maxY) {
+                distOut = Math.max(distOut, state.y - maxY);
+                needsCorrection = true;
+            }
+
+            if (needsCorrection) {
+                const centerX = this.width / 2;
+                const centerY = this.height / 2;
+                targetAngle = Math.atan2(centerY - (state.y + state.size/2), centerX - (state.x + state.size/2));
+
+                // Ramping Function:
+                // Smoothly increase strength as orb goes further out.
+                // 0px out -> 0 strength (No jitter at edge)
+                // 200px out -> 1.0 strength (Full return mode)
+                const ramp = Math.min(distOut / 200, 1.0);
+
+                // Smoothly steer towards center
+                let diff = targetAngle - state.wanderTheta;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+
+                // Turn rate scales with depth
+                const turnRate = 0.02 + (ramp * 0.1); 
+                state.wanderTheta += diff * turnRate;
+
+                // ACCELERATION BOOST scales with depth
+                // No boost right at the edge, only when deep out
+                const boost = ramp * 0.05;
+                state.vx += Math.cos(state.wanderTheta) * boost;
+                state.vy += Math.sin(state.wanderTheta) * boost;
+            }
+
+            // 6. Apply to DOM (Both layers)
             const baseTransform = `translate3d(${state.x}px, ${state.y}px, 0)`;
 
             let scale = 1.0;
             if (!edgeMode) {
-                // Adjust scale based on opacity to ensure contrast layer stays inside color layer
-                // Lower opacity -> smaller effective blur radius -> needs smaller contrast orb
                 const opacity = this.orbs[i]?.opacity ?? this.config.OPACITY.MIN;
                 const minScale = 0.8;
                 const maxScale = 0.92;
