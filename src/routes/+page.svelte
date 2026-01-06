@@ -46,9 +46,10 @@
 
   let settingsLoaded = $state(false);
 
-  onMount(async () => {
-    const module = await import("cropperjs");
-    CropperClass = module.default;
+  onMount(() => {
+    import("cropperjs").then((module) => {
+      CropperClass = module.default;
+    });
 
     // Load Settings from LocalStorage
     const stored = localStorage.getItem("app_appearance_settings");
@@ -64,7 +65,44 @@
         console.warn("Failed to load settings:", e);
       }
     }
+
+    const adjustForMobile = () => {
+      const width = window.innerWidth;
+      // スマホなどの極端に狭い画面（600px未満と定義）
+      if (width < 600) {
+        // 既存の設定値がモバイルに適していない場合のみ変更する（過度な上書きを防ぐため）
+        // あるいは、要件「自動で変更」に従い、強制的にセーフな値にする
+
+        // モバイル向けの調整値
+        // 数を減らす (例: 6 -> 4)
+        // サイズを小さくする (Min: 100, Max: 300)
+
+        // ユーザー設定を尊重しつつ、モバイルで問題になる過剰な設定のみキャップする
+        bgOrbCount = Math.min(bgOrbCount, 4);
+        bgSizeMin = Math.min(bgSizeMin, 100);
+        bgSizeMax = Math.min(bgSizeMax, 250);
+      }
+    };
+
+    // Initial check
+    adjustForMobile();
+
+    // Resize listener to handle orientation change or window resizing
+    let resizeTimer: number;
+    const onResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        adjustForMobile();
+      }, 200);
+    };
+    window.addEventListener("resize", onResize);
+
     settingsLoaded = true;
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      clearTimeout(resizeTimer);
+    };
   });
 
   $effect(() => {
